@@ -20,7 +20,7 @@ const LOCAL_IP = getNetworkIP();
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../frontend')));
+app.use(express.static(path.join(__dirname, '../Frontend')));
 
 app.use((req, res, next) => {
     const ua = req.headers['user-agent'] || '';
@@ -273,8 +273,8 @@ function calculateETA(distanceKm, speedKmh = 12) {
 // API ROUTES
 // ============================================
 
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../frontend/index.html')));
-app.get('/navigator', (req, res) => res.sendFile(path.join(__dirname, '../frontend/navigator.html')));
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../Frontend/index.html')));
+app.get('/navigator', (req, res) => res.sendFile(path.join(__dirname, '../Frontend/navigator.html')));
 
 app.get('/api/mobile/config', (req, res) => {
     res.json({
