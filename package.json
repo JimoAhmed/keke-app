@@ -1,11 +1,13 @@
+
+
 {
   "name": "babcock-campus-navigator",
   "version": "1.0.0",
   "description": "Babcock University Campus Navigation with Vehicle Availability",
-  "main": "backend/server.js",
+  "main": "Backend/server.js",
   "scripts": {
-    "start": "node backend/server.js",
-    "dev": "nodemon backend/server.js",
+    "start": "node Backend/server.js",
+    "dev": "nodemon Backend/server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": ["campus", "navigation", "babcock", "vehicle", "tracking"],

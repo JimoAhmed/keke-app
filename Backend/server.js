@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -17,10 +18,14 @@ function getNetworkIP() {
 }
 
 const LOCAL_IP = getNetworkIP();
+const FRONTEND_DIR = path.join(__dirname, '../Frontend');
+const HAS_FRONTEND = fs.existsSync(FRONTEND_DIR);
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../Frontend')));
+if (HAS_FRONTEND) {
+    app.use(express.static(FRONTEND_DIR));
+}
 
 app.use((req, res, next) => {
     const ua = req.headers['user-agent'] || '';
@@ -273,8 +278,15 @@ function calculateETA(distanceKm, speedKmh = 12) {
 // API ROUTES
 // ============================================
 
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../Frontend/index.html')));
-app.get('/navigator', (req, res) => res.sendFile(path.join(__dirname, '../Frontend/navigator.html')));
+app.get('/', (req, res) => {
+    if (HAS_FRONTEND) return res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
+    return res.json({ service: 'keke-backend', status: 'ok' });
+});
+
+app.get('/navigator', (req, res) => {
+    if (HAS_FRONTEND) return res.sendFile(path.join(FRONTEND_DIR, 'navigator.html'));
+    return res.status(404).json({ error: 'Navigator frontend is not deployed on this service' });
+});
 
 app.get('/api/mobile/config', (req, res) => {
     res.json({
