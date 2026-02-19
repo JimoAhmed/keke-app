@@ -59,6 +59,7 @@ class KekePool {
         this.status = 'waiting';
         this.assignedVehicle = null;
         this.optimizedRoute = null;
+        this.syncState = null;
         this.vehicleId = vehicleId;
 
         // FIXED: Lock the vehicle for pool mode as soon as the pool is created
@@ -110,6 +111,7 @@ class KekePool {
         this.assignedVehicle = vehicles.find(v => v.id === this.vehicleId);
         if (this.assignedVehicle) {
             this.calculateOptimizedRoute();
+            this.buildSynchronizedPlan();
             const vIdx = vehicles.findIndex(v => v.id === this.vehicleId);
             if (vIdx !== -1) {
                 vehicles[vIdx].reservedForPool = true;
@@ -147,6 +149,106 @@ class KekePool {
             destination: this.destination,
             estimatedPickupOrder,
             totalTime: Math.ceil(totalTime)
+        };
+    }
+
+    buildSynchronizedPlan() {
+        if (!this.assignedVehicle || !this.optimizedRoute) return;
+
+        const nowMs = Date.now();
+        const rideStartMs = nowMs + 2000;
+        const speed = this.assignedVehicle.speed || 12;
+        const riders = this.riders || [];
+        if (riders.length === 0) return;
+
+        const SAME_LOCATION_THRESHOLD_KM = 0.02;
+        const first = riders[0];
+        const samePickupLocation = riders.every(r =>
+            calculateDistance(r.pickupLat, r.pickupLng, first.pickupLat, first.pickupLng) <= SAME_LOCATION_THRESHOLD_KM
+        );
+
+        let pickupPlan = [];
+        let totalTimeMinutes = this.optimizedRoute.totalTime || 0;
+
+        if (samePickupLocation) {
+            const distToShared = calculateDistance(
+                this.assignedVehicle.lat, this.assignedVehicle.lng,
+                first.pickupLat, first.pickupLng
+            );
+            const sharedPickupEta = Math.max(1, Math.ceil((distToShared / speed) * 60));
+            const distToDest = calculateDistance(
+                first.pickupLat, first.pickupLng,
+                this.destination.lat, this.destination.lng
+            );
+            const toDestination = Math.max(1, Math.ceil((distToDest / speed) * 60));
+            totalTimeMinutes = sharedPickupEta + toDestination;
+
+            pickupPlan = riders.map((r, index) => ({
+                riderId: r.id,
+                riderName: r.name,
+                pickupOrder: index + 1,
+                legEtaMinutes: sharedPickupEta,
+                cumulativeETA: sharedPickupEta,
+                etaAt: new Date(rideStartMs + sharedPickupEta * 60000).toISOString(),
+                pickupLat: r.pickupLat,
+                pickupLng: r.pickupLng
+            }));
+
+            this.optimizedRoute = {
+                ...this.optimizedRoute,
+                mode: 'group',
+                estimatedPickupOrder: pickupPlan.map(p => ({
+                    id: p.riderId,
+                    name: p.riderName,
+                    pickupLat: p.pickupLat,
+                    pickupLng: p.pickupLng,
+                    pickupOrder: p.pickupOrder,
+                    eta: p.legEtaMinutes,
+                    cumulativeETA: p.cumulativeETA
+                })),
+                sharedPickupETA: sharedPickupEta,
+                totalTime: totalTimeMinutes
+            };
+        } else {
+            let cumulative = 0;
+            const existingOrder = this.optimizedRoute.estimatedPickupOrder || [];
+            pickupPlan = existingOrder.map((r, index) => {
+                const legEta = Math.max(1, parseInt(r.eta, 10) || 1);
+                cumulative += legEta;
+                return {
+                    riderId: r.id,
+                    riderName: r.name,
+                    pickupOrder: r.pickupOrder || (index + 1),
+                    legEtaMinutes: legEta,
+                    cumulativeETA: cumulative,
+                    etaAt: new Date(rideStartMs + cumulative * 60000).toISOString(),
+                    pickupLat: r.pickupLat,
+                    pickupLng: r.pickupLng
+                };
+            });
+
+            this.optimizedRoute = {
+                ...this.optimizedRoute,
+                mode: 'staggered',
+                estimatedPickupOrder: pickupPlan.map(p => ({
+                    id: p.riderId,
+                    name: p.riderName,
+                    pickupLat: p.pickupLat,
+                    pickupLng: p.pickupLng,
+                    pickupOrder: p.pickupOrder,
+                    eta: p.legEtaMinutes,
+                    cumulativeETA: p.cumulativeETA
+                }))
+            };
+        }
+
+        this.syncState = {
+            generatedAt: new Date(nowMs).toISOString(),
+            rideStartAt: new Date(rideStartMs).toISOString(),
+            samePickupLocation,
+            totalTimeMinutes,
+            estimatedArrivalAt: new Date(rideStartMs + totalTimeMinutes * 60000).toISOString(),
+            pickupPlan
         };
     }
 }
@@ -326,11 +428,21 @@ app.get('/api/kekepool/status', (req, res) => {
     const existingPool = kekePools.find(p => p.destination.name===destination && p.status==='waiting' && p.riders.length<p.maxRiders);
     if (existingPool) {
         res.json({
+            serverTime: new Date().toISOString(),
             exists: true,
-            group: { id:existingPool.id, destination:existingPool.destination, riders:existingPool.riders, maxRiders:existingPool.maxRiders, spotsLeft:existingPool.maxRiders-existingPool.riders.length, createdAt:existingPool.createdAt, vehicleId:existingPool.vehicleId }
+            group: {
+                id:existingPool.id,
+                destination:existingPool.destination,
+                riders:existingPool.riders,
+                maxRiders:existingPool.maxRiders,
+                spotsLeft:existingPool.maxRiders-existingPool.riders.length,
+                createdAt:existingPool.createdAt,
+                vehicleId:existingPool.vehicleId,
+                syncState: existingPool.syncState
+            }
         });
     } else {
-        res.json({ exists: false });
+        res.json({ serverTime: new Date().toISOString(), exists: false });
     }
 });
 
@@ -391,17 +503,19 @@ app.post('/api/kekepool/join', (req, res) => {
             expiresAt:expiryTime.toISOString(), createdAt:new Date().toISOString()
         });
         return res.json({
+            serverTime: new Date().toISOString(),
             success: true,
             message: 'Pool is ready! Simulation will start.',
-            pool: { id:pool.id, status:pool.status, riders:pool.riders, maxRiders:pool.maxRiders, spotsLeft:0, vehicleId:pool.vehicleId },
-            reservation: { id:groupReservationId, vehicle:pool.assignedVehicle, optimizedRoute:pool.optimizedRoute, totalTime:pool.optimizedRoute?.totalTime }
+            pool: { id:pool.id, status:pool.status, riders:pool.riders, maxRiders:pool.maxRiders, spotsLeft:0, vehicleId:pool.vehicleId, syncState:pool.syncState },
+            reservation: { id:groupReservationId, vehicle:pool.assignedVehicle, optimizedRoute:pool.optimizedRoute, totalTime:pool.optimizedRoute?.totalTime, syncState:pool.syncState }
         });
     }
 
     res.json({
+        serverTime: new Date().toISOString(),
         success: true,
         message: `Joined pool. Waiting for ${pool.maxRiders - pool.riders.length} more rider(s).`,
-        pool: { id:pool.id, status:pool.status, riders:pool.riders, maxRiders:pool.maxRiders, spotsLeft:pool.maxRiders-pool.riders.length, vehicleId:pool.vehicleId }
+        pool: { id:pool.id, status:pool.status, riders:pool.riders, maxRiders:pool.maxRiders, spotsLeft:pool.maxRiders-pool.riders.length, vehicleId:pool.vehicleId, syncState:pool.syncState }
     });
 });
 
@@ -409,11 +523,13 @@ app.get('/api/kekepool/:poolId', (req, res) => {
     const pool = kekePools.find(p => p.id === req.params.poolId);
     if (!pool) return res.status(404).json({ error:'Pool not found' });
     res.json({
+        serverTime: new Date().toISOString(),
         id:pool.id, destination:pool.destination, riders:pool.riders, maxRiders:pool.maxRiders,
         spotsLeft:pool.maxRiders-pool.riders.length, status:pool.status, createdAt:pool.createdAt,
         vehicleId:pool.vehicleId,
         assignedVehicle: pool.assignedVehicle ? { id:pool.assignedVehicle.id, name:pool.assignedVehicle.name, driver:pool.assignedVehicle.driver, phone:pool.assignedVehicle.phone, lat:pool.assignedVehicle.lat, lng:pool.assignedVehicle.lng, speed:pool.assignedVehicle.speed } : null,
-        optimizedRoute:pool.optimizedRoute
+        optimizedRoute:pool.optimizedRoute,
+        syncState: pool.syncState
     });
 });
 
