@@ -166,10 +166,17 @@ class KekePool {
         const riders = this.riders || [];
         if (riders.length === 0) return;
 
-        const SAME_LOCATION_THRESHOLD_KM = 0.02;
-        const first = riders[0];
+        // Use a wider threshold for real-world phone GPS drift on campus.
+        const SAME_LOCATION_THRESHOLD_KM = 0.08; // 80 meters
+        const centroid = riders.reduce((acc, r) => {
+            acc.lat += r.pickupLat;
+            acc.lng += r.pickupLng;
+            return acc;
+        }, { lat: 0, lng: 0 });
+        centroid.lat /= riders.length;
+        centroid.lng /= riders.length;
         const samePickupLocation = riders.every(r =>
-            calculateDistance(r.pickupLat, r.pickupLng, first.pickupLat, first.pickupLng) <= SAME_LOCATION_THRESHOLD_KM
+            calculateDistance(r.pickupLat, r.pickupLng, centroid.lat, centroid.lng) <= SAME_LOCATION_THRESHOLD_KM
         );
 
         let pickupPlan = [];
